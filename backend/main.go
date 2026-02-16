@@ -847,11 +847,31 @@ func runMigrations() {
 		"ALTER TABLE movies ADD COLUMN points REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE movies ADD COLUMN projected_points REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE movies ADD COLUMN opening_weekend_gross REAL NOT NULL DEFAULT 0",
-		"ALTER TABLE leagues ADD COLUMN invite_code TEXT UNIQUE",
+		"ALTER TABLE leagues ADD COLUMN invite_code TEXT",
 	}
 	for _, m := range migrations {
 		db.Exec(m) // ignore errors (column already exists)
 	}
+	// Separate index creation (SQLite can't do UNIQUE in ALTER TABLE)
+	db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_leagues_invite_code ON leagues(invite_code)")
+	// Create chat and notifications tables
+	db.Exec(`CREATE TABLE IF NOT EXISTS league_messages (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		league_id INTEGER NOT NULL REFERENCES leagues(id),
+		user_id INTEGER NOT NULL REFERENCES users(id),
+		message TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS notifications (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id INTEGER NOT NULL REFERENCES users(id),
+		type TEXT NOT NULL,
+		title TEXT NOT NULL,
+		body TEXT NOT NULL DEFAULT '',
+		league_id INTEGER,
+		read BOOLEAN NOT NULL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
 }
 
 // --- Scheduled Sync ---

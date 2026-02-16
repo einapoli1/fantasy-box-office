@@ -634,11 +634,25 @@ func getTeamRoster(c *fiber.Ctx) error {
 
 // --- Movies ---
 
+func atoi(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
+}
+
 func getMovies(c *fiber.Ctx) error {
 	status := c.Query("status")
 	search := c.Query("search")
+	year := c.Query("year")
 	query := "SELECT id, tmdb_id, title, release_date, poster_url, budget, domestic_gross, worldwide_gross, rt_score, status, points, projected_points FROM movies WHERE 1=1"
 	var args []interface{}
+	if year != "" {
+		query += " AND release_date >= ? AND release_date < ?"
+		args = append(args, year+"-01-01", fmt.Sprintf("%d-01-01", atoi(year)+1))
+	} else {
+		// Default: current year and future only
+		query += " AND release_date >= ?"
+		args = append(args, fmt.Sprintf("%d-01-01", time.Now().Year()))
+	}
 	if status != "" {
 		query += " AND status = ?"
 		args = append(args, status)
@@ -647,7 +661,7 @@ func getMovies(c *fiber.Ctx) error {
 		query += " AND title LIKE ?"
 		args = append(args, "%"+search+"%")
 	}
-	query += " ORDER BY release_date ASC LIMIT 200"
+	query += " ORDER BY release_date ASC LIMIT 500"
 
 	rows, err := db.Query(query, args...)
 	if err != nil {

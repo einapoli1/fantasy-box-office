@@ -25,7 +25,8 @@ const tmdbBase = "https://api.themoviedb.org/3"
 const tmdbImageBase = "https://image.tmdb.org/t/p/w500"
 
 type tmdbMovieList struct {
-	Results []tmdbMovie `json:"results"`
+	Results    []tmdbMovie `json:"results"`
+	TotalPages int         `json:"total_pages"`
 }
 
 type tmdbMovie struct {
@@ -97,22 +98,64 @@ func posterURL(path string) string {
 	return tmdbImageBase + path
 }
 
+// tmdbFetchDiscover fetches movies from TMDB discover endpoint with date range and pagination.
+func tmdbFetchDiscover(dateGTE, dateLTE string, maxPages int) ([]tmdbMovie, error) {
+	var all []tmdbMovie
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/discover/movie?region=US&sort_by=popularity.desc&with_release_type=2|3&primary_release_date.gte=%s&primary_release_date.lte=%s&page=%d",
+			dateGTE, dateLTE, page)
+		data, err := tmdbGet(path)
+		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
+			break
+		}
+		var list tmdbMovieList
+		if err := json.Unmarshal(data, &list); err != nil {
+			break
+		}
+		all = append(all, list.Results...)
+		if page >= list.TotalPages {
+			break
+		}
+	}
+	return all, nil
+}
+
 func tmdbSyncHandler(c *fiber.Ctx) error {
-	upcoming, err1 := tmdbFetchList("/movie/upcoming")
-	nowPlaying, err2 := tmdbFetchList("/movie/now_playing")
+	now := time.Now()
+	year := now.Year()
+
+	// Fetch current year movies (wide range: Jan 1 to Dec 31) + next year's announced
+	dateGTE := fmt.Sprintf("%d-01-01", year)
+	dateLTE := fmt.Sprintf("%d-12-31", year)
+	nextDateGTE := fmt.Sprintf("%d-01-01", year+1)
+	nextDateLTE := fmt.Sprintf("%d-12-31", year+1)
+
+	current, err1 := tmdbFetchDiscover(dateGTE, dateLTE, 10)     // up to 200 movies this year
+	next, err2 := tmdbFetchDiscover(nextDateGTE, nextDateLTE, 5) // up to 100 next year
 	if err1 != nil && err2 != nil {
 		return fiber.NewError(500, "Failed to fetch from TMDB")
 	}
 
+	// Also grab recently released (last 3 months) for scoring updates
+	recentGTE := now.AddDate(0, -3, 0).Format("2006-01-02")
+	recentLTE := now.Format("2006-01-02")
+	recent, _ := tmdbFetchDiscover(recentGTE, recentLTE, 5)
+
 	all := make(map[int]tmdbMovie)
-	for _, m := range upcoming {
+	for _, m := range current {
 		all[m.ID] = m
 	}
-	for _, m := range nowPlaying {
+	for _, m := range next {
+		all[m.ID] = m
+	}
+	for _, m := range recent {
 		all[m.ID] = m
 	}
 
-	now := time.Now().Format("2006-01-02")
+	today := now.Format("2006-01-02")
 	synced := 0
 
 	for _, m := range all {
@@ -123,7 +166,7 @@ func tmdbSyncHandler(c *fiber.Ctx) error {
 		}
 
 		status := "upcoming"
-		if m.ReleaseDate != "" && m.ReleaseDate <= now {
+		if m.ReleaseDate != "" && m.ReleaseDate <= today {
 			status = "released"
 		}
 

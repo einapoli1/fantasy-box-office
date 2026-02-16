@@ -121,7 +121,7 @@ export const api = {
   getTeamRoster: (id: number) => request<any[]>(`/teams/${id}/roster`),
 
   // Movies
-  getMovies: (params?: { status?: string; search?: string }) => {
+  getMovies: (params?: { status?: string; search?: string; year?: string }) => {
     const qs = new URLSearchParams(params as any).toString();
     return request<any[]>(`/movies${qs ? '?' + qs : ''}`);
   },

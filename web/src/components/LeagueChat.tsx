@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { api, ChatMessage } from '../lib/api';
+import { api } from '../lib/api';
+import type { ChatMessage } from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 interface Props {

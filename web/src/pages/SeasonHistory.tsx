@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { api, SeasonWinner, SeasonRecord } from '../lib/api';
+import { api } from '../lib/api';
+import type { SeasonWinner, SeasonRecord } from '../lib/api';
 import Skeleton from '../components/Skeleton';
 
 export default function SeasonHistory() {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { api, MovieProjection } from '../lib/api';
+import { api } from '../lib/api';
+import type { MovieProjection } from '../lib/api';
 import ShareButton from '../components/ShareButton';
 import Skeleton from '../components/Skeleton';
 

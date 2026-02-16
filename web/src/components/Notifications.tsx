@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, Notification } from '../lib/api';
+import { api } from '../lib/api';
+import type { AppNotification as Notification } from '../lib/api';
 
 export default function Notifications() {
   const [notifications, setNotifications] = useState<Notification[]>([]);

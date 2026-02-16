@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { api, TradeAnalysis } from '../lib/api';
+import { api } from '../lib/api';
+import type { TradeAnalysis } from '../lib/api';
 import TradeProposal from '../components/TradeProposal';
 import Skeleton from '../components/Skeleton';
 

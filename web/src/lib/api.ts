@@ -38,7 +38,7 @@ export function getWsUrl(path: string): string {
   return token ? `${url}?token=${token}` : url;
 }
 
-export interface Notification {
+export interface AppNotification {
   id: number;
   type: string;
   message: string;
@@ -141,7 +141,7 @@ export const api = {
   getLeagueWaivers: (id: number) => request<any[]>(`/leagues/${id}/waivers`),
 
   // Notifications
-  getNotifications: () => request<Notification[]>('/notifications'),
+  getNotifications: () => request<AppNotification[]>('/notifications'),
   markNotificationRead: (id: number) => request<any>(`/notifications/${id}/read`, { method: 'PUT' }),
 
   // Season History

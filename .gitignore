@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.expo/
+*.db
+backend/fantasy-box-office
+backend/fantasy.db
+web/node_modules/
+mobile/node_modules/
+shared/node_modules/
+shared/dist/
+.env
+.DS_Store

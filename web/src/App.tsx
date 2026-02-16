@@ -1,5 +1,7 @@
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './lib/auth';
+import { ToastProvider } from './components/Toast';
+import Notifications from './components/Notifications';
 import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -10,6 +12,8 @@ import MovieDetail from './pages/MovieDetail';
 import TradeCenter from './pages/TradeCenter';
 import WaiverWire from './pages/WaiverWire';
 import Profile from './pages/Profile';
+import SeasonHistory from './pages/SeasonHistory';
+import JoinLeague from './pages/JoinLeague';
 import './App.css';
 
 function Nav() {
@@ -21,6 +25,8 @@ function Nav() {
         {user ? (
           <>
             <Link to="/dashboard">Dashboard</Link>
+            <Link to="/history">History</Link>
+            <Notifications />
             <Link to="/profile">{user.display_name}</Link>
             <button className="nav-btn" onClick={logout}>Logout</button>
           </>
@@ -42,23 +48,27 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Nav />
-        <main className="main-content">
-          <Routes>
-            <Route path="/" element={<Landing />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-            <Route path="/league/:id" element={<ProtectedRoute><LeagueView /></ProtectedRoute>} />
-            <Route path="/league/:id/draft" element={<ProtectedRoute><DraftRoom /></ProtectedRoute>} />
-            <Route path="/league/:id/trades" element={<ProtectedRoute><TradeCenter /></ProtectedRoute>} />
-            <Route path="/league/:id/waivers" element={<ProtectedRoute><WaiverWire /></ProtectedRoute>} />
-            <Route path="/team/:id" element={<ProtectedRoute><TeamView /></ProtectedRoute>} />
-            <Route path="/movie/:id" element={<MovieDetail />} />
-            <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
-          </Routes>
-        </main>
-      </BrowserRouter>
+      <ToastProvider>
+        <BrowserRouter>
+          <Nav />
+          <main className="main-content">
+            <Routes>
+              <Route path="/" element={<Landing />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+              <Route path="/league/:id" element={<ProtectedRoute><LeagueView /></ProtectedRoute>} />
+              <Route path="/league/:id/draft" element={<ProtectedRoute><DraftRoom /></ProtectedRoute>} />
+              <Route path="/league/:id/trades" element={<ProtectedRoute><TradeCenter /></ProtectedRoute>} />
+              <Route path="/league/:id/waivers" element={<ProtectedRoute><WaiverWire /></ProtectedRoute>} />
+              <Route path="/team/:id" element={<ProtectedRoute><TeamView /></ProtectedRoute>} />
+              <Route path="/movie/:id" element={<MovieDetail />} />
+              <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="/history" element={<SeasonHistory />} />
+              <Route path="/join/:code" element={<JoinLeague />} />
+            </Routes>
+          </main>
+        </BrowserRouter>
+      </ToastProvider>
     </AuthProvider>
   );
 }

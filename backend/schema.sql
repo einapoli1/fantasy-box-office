@@ -91,3 +91,25 @@ CREATE TABLE IF NOT EXISTS transactions (
     type TEXT NOT NULL CHECK(type IN ('draft','waiver','trade','drop')),
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- New columns (ALTERs are idempotent via IF NOT EXISTS workaround)
+-- We use CREATE TABLE IF NOT EXISTS for new tables, and handle ALTER via init code
+
+CREATE TABLE IF NOT EXISTS league_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    league_id INTEGER NOT NULL REFERENCES leagues(id),
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    message TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    league_id INTEGER NOT NULL DEFAULT 0,
+    read BOOLEAN NOT NULL DEFAULT false,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

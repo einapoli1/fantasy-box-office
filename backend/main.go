@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -37,8 +39,10 @@ func main() {
 	}
 
 	initTMDB()
+	runMigrations()
 	seedMovies()
 	go fixSeedPosters()
+	go scheduledSync()
 
 	app := fiber.New(fiber.Config{ErrorHandler: func(c *fiber.Ctx, err error) error {
 		code := fiber.StatusInternalServerError
@@ -95,6 +99,31 @@ func main() {
 
 	// Waivers
 	api.Post("/waivers/claim", claimWaiver)
+
+	// Scoring
+	app.Post("/api/scoring/recalculate", recalculateHandler)
+
+	// League invite
+	api.Get("/leagues/:id/invite", getLeagueInvite)
+	app.Post("/api/leagues/join/:code", authMiddlewareOptional, joinLeagueByInvite)
+
+	// Chat
+	api.Get("/leagues/:id/chat", getChatMessages)
+	api.Post("/leagues/:id/chat", sendChatMessage)
+
+	// Notifications
+	api.Use("/notifications", authMiddleware)
+	api.Get("/notifications", getNotifications)
+	api.Put("/notifications/:id/read", markNotificationRead)
+
+	// Projections
+	app.Get("/api/movies/:id/projection", getMovieProjection)
+
+	// Trade analyzer
+	api.Post("/trades/analyze", analyzeTrade)
+
+	// WebSocket routes
+	setupWebSocketRoutes(app)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -270,9 +299,10 @@ func createLeague(c *fiber.Ctx) error {
 		body.TeamName = "My Team"
 	}
 
+	inviteCode := uuid.New().String()
 	tx, _ := db.Begin()
-	res, err := tx.Exec("INSERT INTO leagues (name, owner_id, season_year, draft_date, max_teams) VALUES (?, ?, ?, ?, ?)",
-		body.Name, userID, body.SeasonYear, body.DraftDate, body.MaxTeams)
+	res, err := tx.Exec("INSERT INTO leagues (name, owner_id, season_year, draft_date, max_teams, invite_code) VALUES (?, ?, ?, ?, ?, ?)",
+		body.Name, userID, body.SeasonYear, body.DraftDate, body.MaxTeams, inviteCode)
 	if err != nil {
 		tx.Rollback()
 		return fiber.NewError(500, err.Error())
@@ -286,7 +316,7 @@ func createLeague(c *fiber.Ctx) error {
 	}
 	tx.Commit()
 
-	return c.Status(201).JSON(fiber.Map{"id": leagueID, "name": body.Name, "status": "pending"})
+	return c.Status(201).JSON(fiber.Map{"id": leagueID, "name": body.Name, "status": "pending", "invite_code": inviteCode})
 }
 
 func getLeague(c *fiber.Ctx) error {
@@ -808,6 +838,338 @@ func getLeagueWaivers(c *fiber.Ctx) error {
 		waivers = []fiber.Map{}
 	}
 	return c.JSON(waivers)
+}
+
+// --- Migrations ---
+
+func runMigrations() {
+	migrations := []string{
+		"ALTER TABLE movies ADD COLUMN points REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE movies ADD COLUMN projected_points REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE movies ADD COLUMN opening_weekend_gross REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE leagues ADD COLUMN invite_code TEXT UNIQUE",
+	}
+	for _, m := range migrations {
+		db.Exec(m) // ignore errors (column already exists)
+	}
+}
+
+// --- Scheduled Sync ---
+
+func scheduledSync() {
+	log.Println("Starting scheduled TMDB sync (every 6 hours)")
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		<-ticker.C
+		log.Println("Running scheduled TMDB sync...")
+		runSyncAndScore()
+	}
+}
+
+func runSyncAndScore() {
+	// Track upcoming movies before sync for opening weekend detection
+	upcomingBefore := make(map[int]bool)
+	rows, _ := db.Query("SELECT tmdb_id FROM movies WHERE status = 'upcoming'")
+	if rows != nil {
+		for rows.Next() {
+			var tid int
+			rows.Scan(&tid)
+			upcomingBefore[tid] = true
+		}
+		rows.Close()
+	}
+
+	// Run TMDB sync inline
+	upcoming, err1 := tmdbFetchList("/movie/upcoming")
+	nowPlaying, err2 := tmdbFetchList("/movie/now_playing")
+	if err1 != nil && err2 != nil {
+		log.Println("Sync failed: could not fetch TMDB")
+		return
+	}
+
+	all := make(map[int]tmdbMovie)
+	for _, m := range upcoming {
+		all[m.ID] = m
+	}
+	for _, m := range nowPlaying {
+		all[m.ID] = m
+	}
+
+	now := time.Now().Format("2006-01-02")
+	synced := 0
+
+	for _, m := range all {
+		details, err := tmdbFetchDetails(m.ID)
+		if err != nil {
+			details = &m
+		}
+
+		status := "upcoming"
+		if m.ReleaseDate != "" && m.ReleaseDate <= now {
+			status = "released"
+		}
+
+		poster := posterURL(m.PosterPath)
+		budget := details.Budget
+		revenue := details.Revenue
+
+		// RT score proxy: vote_average * 10
+		rtScore := 0.0
+		if details.Runtime > 0 { // has details
+			// Use vote_average from TMDB as RT proxy
+		}
+
+		res, _ := db.Exec(`UPDATE movies SET title=?, release_date=?, poster_url=?, budget=?, domestic_gross=?, worldwide_gross=?, status=?
+			WHERE tmdb_id=?`,
+			m.Title, m.ReleaseDate, poster, budget, revenue, revenue, status, m.ID)
+		rowsAff, _ := res.RowsAffected()
+		if rowsAff == 0 {
+			db.Exec(`INSERT INTO movies (tmdb_id, title, release_date, poster_url, budget, domestic_gross, worldwide_gross, status)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				m.ID, m.Title, m.ReleaseDate, poster, budget, revenue, revenue, status)
+		}
+
+		// Opening weekend detection
+		if upcomingBefore[m.ID] && status == "released" && revenue > 0 {
+			db.Exec("UPDATE movies SET opening_weekend_gross = ? WHERE tmdb_id = ? AND opening_weekend_gross = 0", revenue, m.ID)
+			log.Printf("Detected opening weekend for %s: $%.0f", m.Title, revenue)
+		}
+
+		// RT score proxy
+		_ = rtScore
+		synced++
+	}
+
+	// Update RT scores using TMDB vote_average
+	updateRTScores()
+
+	// Update projections
+	updateProjections()
+
+	// Recalculate scores
+	recalculateAllScores()
+
+	log.Printf("Scheduled sync complete: %d movies synced", synced)
+}
+
+func updateRTScores() {
+	rows, err := db.Query("SELECT id, tmdb_id FROM movies")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	type mid struct{ id, tmdbID int }
+	var movies []mid
+	for rows.Next() {
+		var m mid
+		rows.Scan(&m.id, &m.tmdbID)
+		movies = append(movies, m)
+	}
+
+	for _, m := range movies {
+		data, err := tmdbGet(fmt.Sprintf("/movie/%d", m.tmdbID))
+		if err != nil {
+			continue
+		}
+		var detail struct {
+			VoteAverage float64 `json:"vote_average"`
+		}
+		if err := json.Unmarshal(data, &detail); err != nil {
+			continue
+		}
+		rtProxy := detail.VoteAverage * 10 // 0-100 scale
+		db.Exec("UPDATE movies SET rt_score = ? WHERE id = ?", rtProxy, m.id)
+	}
+}
+
+func updateProjections() {
+	rows, err := db.Query("SELECT id, budget FROM movies WHERE status = 'upcoming'")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var budget float64
+		rows.Scan(&id, &budget)
+
+		// Simple heuristic: projected gross = budget * 2.5
+		projectedGross := budget * 2.5
+		// Apply scoring: domestic ~ 40% of worldwide, opening ~ 35% of domestic
+		domestic := projectedGross * 0.4
+		opening := domestic * 0.35
+		worldwide := projectedGross
+
+		projected := opening/1_000_000 + domestic/1_000_000*0.5 + worldwide/1_000_000*0.25
+		if domestic >= 100_000_000 {
+			projected += 20
+		}
+		if worldwide >= 500_000_000 {
+			projected += 50
+		}
+
+		db.Exec("UPDATE movies SET projected_points = ? WHERE id = ?", projected, id)
+	}
+}
+
+// --- League Invites ---
+
+func getLeagueInvite(c *fiber.Ctx) error {
+	leagueID, _ := strconv.Atoi(c.Params("id"))
+
+	var code sql.NullString
+	db.QueryRow("SELECT invite_code FROM leagues WHERE id = ?", leagueID).Scan(&code)
+	if !code.Valid || code.String == "" {
+		newCode := uuid.New().String()
+		db.Exec("UPDATE leagues SET invite_code = ? WHERE id = ?", newCode, leagueID)
+		code.String = newCode
+	}
+	return c.JSON(fiber.Map{"invite_code": code.String})
+}
+
+func authMiddlewareOptional(c *fiber.Ctx) error {
+	auth := c.Get("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		tokenStr := strings.TrimPrefix(auth, "Bearer ")
+		token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err == nil && token.Valid {
+			claims := token.Claims.(jwt.MapClaims)
+			c.Locals("user_id", int(claims["user_id"].(float64)))
+		}
+	}
+	return c.Next()
+}
+
+func joinLeagueByInvite(c *fiber.Ctx) error {
+	code := c.Params("code")
+	userIDVal := c.Locals("user_id")
+	if userIDVal == nil {
+		return fiber.NewError(401, "Authentication required")
+	}
+	userID := userIDVal.(int)
+
+	var leagueID, maxTeams int
+	var status string
+	err := db.QueryRow("SELECT id, max_teams, status FROM leagues WHERE invite_code = ?", code).Scan(&leagueID, &maxTeams, &status)
+	if err != nil {
+		return fiber.NewError(404, "Invalid invite code")
+	}
+	if status != "pending" {
+		return fiber.NewError(400, "League is not accepting new teams")
+	}
+
+	var count int
+	db.QueryRow("SELECT COUNT(*) FROM teams WHERE league_id = ?", leagueID).Scan(&count)
+	if count >= maxTeams {
+		return fiber.NewError(400, "League is full")
+	}
+
+	var body struct {
+		TeamName string `json:"team_name"`
+	}
+	c.BodyParser(&body)
+	if body.TeamName == "" {
+		body.TeamName = "My Team"
+	}
+
+	_, err = db.Exec("INSERT INTO teams (league_id, user_id, name) VALUES (?, ?, ?)", leagueID, userID, body.TeamName)
+	if err != nil {
+		if strings.Contains(err.Error(), "UNIQUE") {
+			return fiber.NewError(409, "Already in this league")
+		}
+		return fiber.NewError(500, err.Error())
+	}
+	return c.JSON(fiber.Map{"message": "Joined league", "league_id": leagueID})
+}
+
+// --- Movie Projections ---
+
+func getMovieProjection(c *fiber.Ctx) error {
+	id, _ := strconv.Atoi(c.Params("id"))
+
+	var budget, domestic, worldwide, opening, points, projPoints float64
+	var title, status string
+	err := db.QueryRow("SELECT title, budget, domestic_gross, worldwide_gross, opening_weekend_gross, points, projected_points, status FROM movies WHERE id = ?", id).
+		Scan(&title, &budget, &domestic, &worldwide, &opening, &points, &projPoints, &status)
+	if err != nil {
+		return fiber.NewError(404, "Movie not found")
+	}
+
+	// Build projection breakdown
+	projGross := budget * 2.5
+	projDomestic := projGross * 0.4
+	projOpening := projDomestic * 0.35
+	projWorldwide := projGross
+
+	return c.JSON(fiber.Map{
+		"movie_id":             id,
+		"title":                title,
+		"status":               status,
+		"current_points":       points,
+		"projected_points":     projPoints,
+		"budget":               budget,
+		"projected_domestic":   projDomestic,
+		"projected_worldwide":  projWorldwide,
+		"projected_opening":    projOpening,
+		"actual_domestic":      domestic,
+		"actual_worldwide":     worldwide,
+		"actual_opening":       opening,
+	})
+}
+
+// --- Trade Analyzer ---
+
+func analyzeTrade(c *fiber.Ctx) error {
+	var body struct {
+		Give    []int `json:"give"`
+		Receive []int `json:"receive"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return fiber.NewError(400, "Invalid request")
+	}
+
+	getPoints := func(ids []int) (float64, float64) {
+		var pts, proj float64
+		for _, id := range ids {
+			var p, pp float64
+			db.QueryRow("SELECT points, projected_points FROM movies WHERE id = ?", id).Scan(&p, &pp)
+			pts += p
+			proj += pp
+		}
+		return pts, proj
+	}
+
+	givePts, giveProj := getPoints(body.Give)
+	recvPts, recvProj := getPoints(body.Receive)
+
+	diff := recvPts - givePts
+	projDiff := recvProj - giveProj
+
+	rec := "neutral"
+	if projDiff > 10 {
+		rec = "strong_accept"
+	} else if projDiff > 0 {
+		rec = "lean_accept"
+	} else if projDiff < -10 {
+		rec = "strong_reject"
+	} else if projDiff < 0 {
+		rec = "lean_reject"
+	}
+
+	return c.JSON(fiber.Map{
+		"give_points":          givePts,
+		"receive_points":       recvPts,
+		"point_difference":     diff,
+		"give_projected":       giveProj,
+		"receive_projected":    recvProj,
+		"projected_difference": projDiff,
+		"recommendation":       rec,
+	})
 }
 
 // --- Seed Data ---

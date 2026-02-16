@@ -36,7 +36,9 @@ func main() {
 		log.Fatal("Failed to execute schema:", err)
 	}
 
+	initTMDB()
 	seedMovies()
+	go fixSeedPosters()
 
 	app := fiber.New(fiber.Config{ErrorHandler: func(c *fiber.Ctx, err error) error {
 		code := fiber.StatusInternalServerError
@@ -80,6 +82,11 @@ func main() {
 	// Movies (public)
 	app.Get("/api/movies", getMovies)
 	app.Get("/api/movies/:id", getMovie)
+
+	// TMDB (public)
+	app.Post("/api/tmdb/sync", tmdbSyncHandler)
+	app.Get("/api/tmdb/sync", tmdbSyncHandler)
+	app.Get("/api/tmdb/search", tmdbSearchHandler)
 
 	// Trades
 	api.Post("/trades", createTrade)

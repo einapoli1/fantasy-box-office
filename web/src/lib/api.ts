@@ -125,6 +125,10 @@ export const api = {
     const qs = new URLSearchParams(params as any).toString();
     return request<any[]>(`/movies${qs ? '?' + qs : ''}`);
   },
+  getLeagueMovies: (leagueId: number, search?: string) => {
+    const qs = search ? `?search=${encodeURIComponent(search)}` : '';
+    return request<any[]>(`/leagues/${leagueId}/movies${qs}`);
+  },
   getMovie: (id: number) => request<any>(`/movies/${id}`),
   getMovieProjections: (id: number) => request<MovieProjection>(`/movies/${id}/projections`),
 

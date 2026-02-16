@@ -74,6 +74,7 @@ func main() {
 	api.Post("/leagues/:id/join", joinLeague)
 	api.Get("/leagues/:id/standings", getStandings)
 	api.Get("/leagues/:id/transactions", getTransactions)
+	api.Get("/leagues/:id/movies", getLeagueMovies)
 	api.Post("/leagues/:id/draft/start", startDraft)
 	api.Post("/leagues/:id/draft/pick", makeDraftPick)
 	api.Get("/leagues/:id/draft/status", getDraftStatus)
@@ -295,7 +296,7 @@ func getUserID(c *fiber.Ctx) int {
 
 func getLeagues(c *fiber.Ctx) error {
 	userID := getUserID(c)
-	rows, err := db.Query(`SELECT l.id, l.name, l.owner_id, l.season_year, l.draft_date, l.max_teams, l.status
+	rows, err := db.Query(`SELECT l.id, l.name, l.owner_id, l.season_year, l.draft_date, l.max_teams, l.status, l.season_start, l.season_end
 		FROM leagues l JOIN teams t ON t.league_id = l.id WHERE t.user_id = ?`, userID)
 	if err != nil {
 		return fiber.NewError(500, err.Error())
@@ -308,8 +309,9 @@ func getLeagues(c *fiber.Ctx) error {
 			ID, OwnerID, SeasonYear, MaxTeams int
 			Name, Status                      string
 			DraftDate                         sql.NullString
+			SeasonStart, SeasonEnd            string
 		}
-		rows.Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status)
+		rows.Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status, &l.SeasonStart, &l.SeasonEnd)
 		dd := ""
 		if l.DraftDate.Valid {
 			dd = l.DraftDate.String
@@ -317,6 +319,7 @@ func getLeagues(c *fiber.Ctx) error {
 		leagues = append(leagues, fiber.Map{
 			"id": l.ID, "name": l.Name, "owner_id": l.OwnerID, "season_year": l.SeasonYear,
 			"draft_date": dd, "max_teams": l.MaxTeams, "status": l.Status,
+			"season_start": l.SeasonStart, "season_end": l.SeasonEnd,
 		})
 	}
 	if leagues == nil {
@@ -328,11 +331,13 @@ func getLeagues(c *fiber.Ctx) error {
 func createLeague(c *fiber.Ctx) error {
 	userID := getUserID(c)
 	var body struct {
-		Name       string `json:"name"`
-		SeasonYear int    `json:"season_year"`
-		DraftDate  string `json:"draft_date"`
-		MaxTeams   int    `json:"max_teams"`
-		TeamName   string `json:"team_name"`
+		Name        string `json:"name"`
+		SeasonYear  int    `json:"season_year"`
+		DraftDate   string `json:"draft_date"`
+		MaxTeams    int    `json:"max_teams"`
+		TeamName    string `json:"team_name"`
+		SeasonStart string `json:"season_start"`
+		SeasonEnd   string `json:"season_end"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(400, "Invalid request")
@@ -349,11 +354,18 @@ func createLeague(c *fiber.Ctx) error {
 	if body.TeamName == "" {
 		body.TeamName = "My Team"
 	}
+	// Default season window: Jan 1 - Dec 31 of the season year
+	if body.SeasonStart == "" {
+		body.SeasonStart = fmt.Sprintf("%d-01-01", body.SeasonYear)
+	}
+	if body.SeasonEnd == "" {
+		body.SeasonEnd = fmt.Sprintf("%d-12-31", body.SeasonYear)
+	}
 
 	inviteCode := uuid.New().String()
 	tx, _ := db.Begin()
-	res, err := tx.Exec("INSERT INTO leagues (name, owner_id, season_year, draft_date, max_teams, invite_code) VALUES (?, ?, ?, ?, ?, ?)",
-		body.Name, userID, body.SeasonYear, body.DraftDate, body.MaxTeams, inviteCode)
+	res, err := tx.Exec("INSERT INTO leagues (name, owner_id, season_year, draft_date, max_teams, invite_code, season_start, season_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		body.Name, userID, body.SeasonYear, body.DraftDate, body.MaxTeams, inviteCode, body.SeasonStart, body.SeasonEnd)
 	if err != nil {
 		tx.Rollback()
 		return fiber.NewError(500, err.Error())
@@ -376,9 +388,10 @@ func getLeague(c *fiber.Ctx) error {
 		ID, OwnerID, SeasonYear, MaxTeams int
 		Name, Status                      string
 		DraftDate                         sql.NullString
+		SeasonStart, SeasonEnd            string
 	}
-	err := db.QueryRow("SELECT id, name, owner_id, season_year, draft_date, max_teams, status FROM leagues WHERE id = ?", id).
-		Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status)
+	err := db.QueryRow("SELECT id, name, owner_id, season_year, draft_date, max_teams, status, season_start, season_end FROM leagues WHERE id = ?", id).
+		Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status, &l.SeasonStart, &l.SeasonEnd)
 	if err != nil {
 		return fiber.NewError(404, "League not found")
 	}
@@ -403,6 +416,7 @@ func getLeague(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"id": l.ID, "name": l.Name, "owner_id": l.OwnerID, "season_year": l.SeasonYear,
 		"draft_date": dd, "max_teams": l.MaxTeams, "status": l.Status, "teams": teams,
+		"season_start": l.SeasonStart, "season_end": l.SeasonEnd,
 	})
 }
 
@@ -441,6 +455,58 @@ func joinLeague(c *fiber.Ctx) error {
 }
 
 // --- Draft ---
+
+// getLeagueMovies returns movies available for a league based on its season window.
+// Only upcoming movies within the league's season_start..season_end are returned.
+func getLeagueMovies(c *fiber.Ctx) error {
+	leagueID, _ := strconv.Atoi(c.Params("id"))
+	search := c.Query("search")
+
+	var seasonStart, seasonEnd string
+	err := db.QueryRow("SELECT season_start, season_end FROM leagues WHERE id = ?", leagueID).Scan(&seasonStart, &seasonEnd)
+	if err != nil {
+		return fiber.NewError(404, "League not found")
+	}
+
+	query := `SELECT id, tmdb_id, title, release_date, poster_url, budget, domestic_gross, worldwide_gross, rt_score, status, points, projected_points 
+		FROM movies WHERE status = 'upcoming' AND release_date >= ? AND release_date <= ?`
+	args := []interface{}{seasonStart, seasonEnd}
+
+	if search != "" {
+		query += " AND title LIKE ?"
+		args = append(args, "%"+search+"%")
+	}
+
+	// Exclude already-drafted movies in this league
+	query += " AND id NOT IN (SELECT movie_id FROM draft_picks WHERE league_id = ? AND movie_id IS NOT NULL)"
+	args = append(args, leagueID)
+
+	query += " ORDER BY release_date ASC LIMIT 500"
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return fiber.NewError(500, err.Error())
+	}
+	defer rows.Close()
+
+	var movies []fiber.Map
+	for rows.Next() {
+		var id, tmdbID int
+		var title, relDate, poster, mstatus string
+		var budget, domGross, wwGross, rt, pts, projPts float64
+		rows.Scan(&id, &tmdbID, &title, &relDate, &poster, &budget, &domGross, &wwGross, &rt, &mstatus, &pts, &projPts)
+		movies = append(movies, fiber.Map{
+			"id": id, "tmdb_id": tmdbID, "title": title, "release_date": relDate,
+			"poster_url": poster, "budget": budget, "domestic_gross": domGross,
+			"worldwide_gross": wwGross, "rt_score": rt, "status": mstatus,
+			"points": pts, "projected_points": projPts,
+		})
+	}
+	if movies == nil {
+		movies = []fiber.Map{}
+	}
+	return c.JSON(movies)
+}
 
 func startDraft(c *fiber.Ctx) error {
 	userID := getUserID(c)
@@ -517,6 +583,20 @@ func makeDraftPick(c *fiber.Ctx) error {
 	db.QueryRow("SELECT user_id FROM teams WHERE id = ?", teamID).Scan(&pickUserID)
 	if pickUserID != userID {
 		return fiber.NewError(403, "Not your turn to pick")
+	}
+
+	// Validate movie is upcoming and within league's season window
+	var seasonStart, seasonEnd string
+	db.QueryRow("SELECT season_start, season_end FROM leagues WHERE id = ?", leagueID).Scan(&seasonStart, &seasonEnd)
+	var movieStatus, movieRelDate string
+	db.QueryRow("SELECT status, release_date FROM movies WHERE id = ?", body.MovieID).Scan(&movieStatus, &movieRelDate)
+	if movieStatus != "upcoming" {
+		return fiber.NewError(400, "Only upcoming movies can be drafted")
+	}
+	if seasonStart != "" && seasonEnd != "" {
+		if movieRelDate < seasonStart || movieRelDate > seasonEnd {
+			return fiber.NewError(400, "Movie release date is outside this league's season window")
+		}
 	}
 
 	// Check movie isn't already drafted in this league
@@ -914,12 +994,16 @@ func runMigrations() {
 		"ALTER TABLE movies ADD COLUMN projected_points REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE movies ADD COLUMN opening_weekend_gross REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE leagues ADD COLUMN invite_code TEXT",
+		"ALTER TABLE leagues ADD COLUMN season_start TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE leagues ADD COLUMN season_end TEXT NOT NULL DEFAULT ''",
 	}
 	for _, m := range migrations {
 		db.Exec(m) // ignore errors (column already exists)
 	}
 	// Separate index creation (SQLite can't do UNIQUE in ALTER TABLE)
 	db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_leagues_invite_code ON leagues(invite_code)")
+	// Backfill season window for existing leagues
+	db.Exec("UPDATE leagues SET season_start = season_year || '-01-01', season_end = season_year || '-12-31' WHERE season_start = '' OR season_start IS NULL")
 	// Create chat and notifications tables
 	db.Exec(`CREATE TABLE IF NOT EXISTS league_messages (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,

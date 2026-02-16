@@ -8,7 +8,8 @@ export default function Dashboard() {
   const [leagues, setLeagues] = useState<any[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showJoin, setShowJoin] = useState(false);
-  const [newLeague, setNewLeague] = useState({ name: '', season_year: 2025, max_teams: 8, team_name: '' });
+  const currentYear = new Date().getFullYear();
+  const [newLeague, setNewLeague] = useState({ name: '', season_year: currentYear, max_teams: 8, team_name: '', season_start: `${currentYear}-01-01`, season_end: `${currentYear}-12-31` });
   const [joinId, setJoinId] = useState('');
   const [joinTeamName, setJoinTeamName] = useState('');
   const { user } = useAuth();
@@ -57,6 +58,12 @@ export default function Dashboard() {
               <input placeholder="Your Team Name" value={newLeague.team_name} onChange={e => setNewLeague({ ...newLeague, team_name: e.target.value })} />
               <input type="number" placeholder="Season Year" value={newLeague.season_year} onChange={e => setNewLeague({ ...newLeague, season_year: parseInt(e.target.value) })} />
               <input type="number" placeholder="Max Teams" value={newLeague.max_teams} onChange={e => setNewLeague({ ...newLeague, max_teams: parseInt(e.target.value) })} min={2} max={12} />
+              <label style={{fontSize: '0.85rem', color: '#ccc', marginTop: 8}}>Season Window</label>
+              <div style={{display: 'flex', gap: 8}}>
+                <input type="date" value={newLeague.season_start} onChange={e => setNewLeague({ ...newLeague, season_start: e.target.value })} />
+                <span style={{alignSelf: 'center', color: '#888'}}>to</span>
+                <input type="date" value={newLeague.season_end} onChange={e => setNewLeague({ ...newLeague, season_end: e.target.value })} />
+              </div>
               <button className="btn btn-primary" type="submit">Create</button>
             </form>
           </div>

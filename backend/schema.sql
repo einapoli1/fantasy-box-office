@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS transactions (
 -- New columns (ALTERs are idempotent via IF NOT EXISTS workaround)
 -- We use CREATE TABLE IF NOT EXISTS for new tables, and handle ALTER via init code
 
+-- League season window columns (added via init code ALTER)
+-- season_start TEXT  (e.g. "2026-01-01")
+-- season_end   TEXT  (e.g. "2026-12-31")
+
 CREATE TABLE IF NOT EXISTS league_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     league_id INTEGER NOT NULL REFERENCES leagues(id),

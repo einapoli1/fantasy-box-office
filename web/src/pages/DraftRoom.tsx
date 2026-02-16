@@ -35,7 +35,7 @@ export default function DraftRoom() {
   // Load initial state
   useEffect(() => {
     api.getDraftStatus(leagueId).then(setDraftStatus);
-    api.getMovies({ status: 'upcoming' }).then(setMovies);
+    api.getLeagueMovies(leagueId).then(setMovies);
   }, [leagueId]);
 
   const handleWsMessage = useCallback((data: any) => {

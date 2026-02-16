@@ -296,7 +296,7 @@ func getUserID(c *fiber.Ctx) int {
 
 func getLeagues(c *fiber.Ctx) error {
 	userID := getUserID(c)
-	rows, err := db.Query(`SELECT l.id, l.name, l.owner_id, l.season_year, l.draft_date, l.max_teams, l.status, l.season_start, l.season_end
+	rows, err := db.Query(`SELECT l.id, l.name, l.owner_id, l.season_year, l.draft_date, l.max_teams, l.status, l.season_start, l.season_end, l.draft_rounds
 		FROM leagues l JOIN teams t ON t.league_id = l.id WHERE t.user_id = ?`, userID)
 	if err != nil {
 		return fiber.NewError(500, err.Error())
@@ -306,12 +306,12 @@ func getLeagues(c *fiber.Ctx) error {
 	var leagues []fiber.Map
 	for rows.Next() {
 		var l struct {
-			ID, OwnerID, SeasonYear, MaxTeams int
-			Name, Status                      string
-			DraftDate                         sql.NullString
-			SeasonStart, SeasonEnd            string
+			ID, OwnerID, SeasonYear, MaxTeams, DraftRounds int
+			Name, Status                                   string
+			DraftDate                                      sql.NullString
+			SeasonStart, SeasonEnd                         string
 		}
-		rows.Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status, &l.SeasonStart, &l.SeasonEnd)
+		rows.Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status, &l.SeasonStart, &l.SeasonEnd, &l.DraftRounds)
 		dd := ""
 		if l.DraftDate.Valid {
 			dd = l.DraftDate.String
@@ -319,7 +319,7 @@ func getLeagues(c *fiber.Ctx) error {
 		leagues = append(leagues, fiber.Map{
 			"id": l.ID, "name": l.Name, "owner_id": l.OwnerID, "season_year": l.SeasonYear,
 			"draft_date": dd, "max_teams": l.MaxTeams, "status": l.Status,
-			"season_start": l.SeasonStart, "season_end": l.SeasonEnd,
+			"season_start": l.SeasonStart, "season_end": l.SeasonEnd, "draft_rounds": l.DraftRounds,
 		})
 	}
 	if leagues == nil {
@@ -338,6 +338,7 @@ func createLeague(c *fiber.Ctx) error {
 		TeamName    string `json:"team_name"`
 		SeasonStart string `json:"season_start"`
 		SeasonEnd   string `json:"season_end"`
+		DraftRounds int    `json:"draft_rounds"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return fiber.NewError(400, "Invalid request")
@@ -361,11 +362,14 @@ func createLeague(c *fiber.Ctx) error {
 	if body.SeasonEnd == "" {
 		body.SeasonEnd = fmt.Sprintf("%d-12-31", body.SeasonYear)
 	}
+	if body.DraftRounds == 0 {
+		body.DraftRounds = 15
+	}
 
 	inviteCode := uuid.New().String()
 	tx, _ := db.Begin()
-	res, err := tx.Exec("INSERT INTO leagues (name, owner_id, season_year, draft_date, max_teams, invite_code, season_start, season_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		body.Name, userID, body.SeasonYear, body.DraftDate, body.MaxTeams, inviteCode, body.SeasonStart, body.SeasonEnd)
+	res, err := tx.Exec("INSERT INTO leagues (name, owner_id, season_year, draft_date, max_teams, invite_code, season_start, season_end, draft_rounds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		body.Name, userID, body.SeasonYear, body.DraftDate, body.MaxTeams, inviteCode, body.SeasonStart, body.SeasonEnd, body.DraftRounds)
 	if err != nil {
 		tx.Rollback()
 		return fiber.NewError(500, err.Error())
@@ -385,13 +389,13 @@ func createLeague(c *fiber.Ctx) error {
 func getLeague(c *fiber.Ctx) error {
 	id, _ := strconv.Atoi(c.Params("id"))
 	var l struct {
-		ID, OwnerID, SeasonYear, MaxTeams int
-		Name, Status                      string
-		DraftDate                         sql.NullString
-		SeasonStart, SeasonEnd            string
+		ID, OwnerID, SeasonYear, MaxTeams, DraftRounds int
+		Name, Status                                   string
+		DraftDate                                      sql.NullString
+		SeasonStart, SeasonEnd                         string
 	}
-	err := db.QueryRow("SELECT id, name, owner_id, season_year, draft_date, max_teams, status, season_start, season_end FROM leagues WHERE id = ?", id).
-		Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status, &l.SeasonStart, &l.SeasonEnd)
+	err := db.QueryRow("SELECT id, name, owner_id, season_year, draft_date, max_teams, status, season_start, season_end, draft_rounds FROM leagues WHERE id = ?", id).
+		Scan(&l.ID, &l.Name, &l.OwnerID, &l.SeasonYear, &l.DraftDate, &l.MaxTeams, &l.Status, &l.SeasonStart, &l.SeasonEnd, &l.DraftRounds)
 	if err != nil {
 		return fiber.NewError(404, "League not found")
 	}
@@ -416,7 +420,7 @@ func getLeague(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"id": l.ID, "name": l.Name, "owner_id": l.OwnerID, "season_year": l.SeasonYear,
 		"draft_date": dd, "max_teams": l.MaxTeams, "status": l.Status, "teams": teams,
-		"season_start": l.SeasonStart, "season_end": l.SeasonEnd,
+		"season_start": l.SeasonStart, "season_end": l.SeasonEnd, "draft_rounds": l.DraftRounds,
 	})
 }
 
@@ -535,9 +539,13 @@ func startDraft(c *fiber.Ctx) error {
 		return fiber.NewError(400, "Need at least 2 teams to draft")
 	}
 
-	// Create snake draft picks (15 rounds)
+	// Create snake draft picks
 	tx, _ := db.Begin()
-	rounds := 15
+	var rounds int
+	db.QueryRow("SELECT draft_rounds FROM leagues WHERE id = ?", leagueID).Scan(&rounds)
+	if rounds == 0 {
+		rounds = 15
+	}
 	pickNum := 1
 	for round := 1; round <= rounds; round++ {
 		order := teamIDs
@@ -996,6 +1004,7 @@ func runMigrations() {
 		"ALTER TABLE leagues ADD COLUMN invite_code TEXT",
 		"ALTER TABLE leagues ADD COLUMN season_start TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE leagues ADD COLUMN season_end TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE leagues ADD COLUMN draft_rounds INTEGER NOT NULL DEFAULT 15",
 	}
 	for _, m := range migrations {
 		db.Exec(m) // ignore errors (column already exists)

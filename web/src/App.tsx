@@ -14,6 +14,7 @@ import WaiverWire from './pages/WaiverWire';
 import Profile from './pages/Profile';
 import SeasonHistory from './pages/SeasonHistory';
 import JoinLeague from './pages/JoinLeague';
+import Movies from './pages/Movies';
 import './App.css';
 
 function Nav() {
@@ -25,6 +26,7 @@ function Nav() {
         {user ? (
           <>
             <Link to="/dashboard">Dashboard</Link>
+            <Link to="/movies">Movies</Link>
             <Link to="/history">History</Link>
             <Notifications />
             <Link to="/profile">{user.display_name}</Link>
@@ -63,6 +65,7 @@ export default function App() {
               <Route path="/team/:id" element={<ProtectedRoute><TeamView /></ProtectedRoute>} />
               <Route path="/movie/:id" element={<MovieDetail />} />
               <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+              <Route path="/movies" element={<Movies />} />
               <Route path="/history" element={<SeasonHistory />} />
               <Route path="/join/:code" element={<JoinLeague />} />
             </Routes>

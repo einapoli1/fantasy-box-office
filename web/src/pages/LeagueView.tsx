@@ -55,8 +55,12 @@ export default function LeagueView() {
           <div className="league-actions">
             {league.status === 'pending' && isOwner && (
               <button className="btn btn-primary" onClick={async () => {
-                await api.startDraft(leagueId);
-                navigate(`/league/${leagueId}/draft`);
+                try {
+                  await api.startDraft(leagueId);
+                  navigate(`/league/${leagueId}/draft`);
+                } catch (e: any) {
+                  alert(e.message || 'Failed to start draft. Need at least 2 teams.');
+                }
               }}>Start Draft</button>
             )}
             {league.status === 'drafting' && (

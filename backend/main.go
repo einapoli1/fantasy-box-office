@@ -122,6 +122,57 @@ func main() {
 	// Trade analyzer
 	api.Post("/trades/analyze", analyzeTrade)
 
+	// Season history
+	app.Get("/api/seasons/history", func(c *fiber.Ctx) error {
+		// For now return current season standings as "history"
+		// In future, completed seasons would be stored separately
+		type Winner struct {
+			Year     int     `json:"year"`
+			Team     string  `json:"team_name"`
+			Owner    string  `json:"owner"`
+			Points   float64 `json:"points"`
+			LeagueID int     `json:"league_id"`
+		}
+		type Record struct {
+			Title string  `json:"title"`
+			Value string  `json:"value"`
+			Year  int     `json:"year"`
+			Team  string  `json:"team"`
+		}
+		// Get top scoring team from completed leagues
+		var winners []Winner
+		rows, err := db.Query(`SELECT l.season_year, t.name, u.display_name, t.total_points, l.id 
+			FROM teams t JOIN leagues l ON t.league_id = l.id JOIN users u ON t.user_id = u.id
+			WHERE l.status = 'completed' ORDER BY l.season_year DESC, t.total_points DESC`)
+		if err == nil {
+			defer rows.Close()
+			seen := map[int]bool{}
+			for rows.Next() {
+				var w Winner
+				rows.Scan(&w.Year, &w.Team, &w.Owner, &w.Points, &w.LeagueID)
+				if !seen[w.Year] {
+					winners = append(winners, w)
+					seen[w.Year] = true
+				}
+			}
+		}
+		// Get some records from current data
+		var records []Record
+		var topMovie struct{ title string; points float64 }
+		db.QueryRow("SELECT title, points FROM movies ORDER BY points DESC LIMIT 1").Scan(&topMovie.title, &topMovie.points)
+		if topMovie.title != "" {
+			records = append(records, Record{Title: "Highest Scoring Movie", Value: fmt.Sprintf("%s (%.1f pts)", topMovie.title, topMovie.points), Year: 2025})
+		}
+		var topBudget struct{ title string; budget float64 }
+		db.QueryRow("SELECT title, budget FROM movies ORDER BY budget DESC LIMIT 1").Scan(&topBudget.title, &topBudget.budget)
+		if topBudget.title != "" {
+			records = append(records, Record{Title: "Biggest Budget", Value: fmt.Sprintf("%s ($%.0fM)", topBudget.title, topBudget.budget/1e6), Year: 2025})
+		}
+		if winners == nil { winners = []Winner{} }
+		if records == nil { records = []Record{} }
+		return c.JSON(fiber.Map{"winners": winners, "records": records})
+	})
+
 	// WebSocket routes
 	setupWebSocketRoutes(app)
 
@@ -586,7 +637,7 @@ func getTeamRoster(c *fiber.Ctx) error {
 func getMovies(c *fiber.Ctx) error {
 	status := c.Query("status")
 	search := c.Query("search")
-	query := "SELECT id, tmdb_id, title, release_date, poster_url, budget, domestic_gross, worldwide_gross, rt_score, status FROM movies WHERE 1=1"
+	query := "SELECT id, tmdb_id, title, release_date, poster_url, budget, domestic_gross, worldwide_gross, rt_score, status, points, projected_points FROM movies WHERE 1=1"
 	var args []interface{}
 	if status != "" {
 		query += " AND status = ?"
@@ -596,7 +647,7 @@ func getMovies(c *fiber.Ctx) error {
 		query += " AND title LIKE ?"
 		args = append(args, "%"+search+"%")
 	}
-	query += " ORDER BY release_date ASC LIMIT 100"
+	query += " ORDER BY release_date ASC LIMIT 200"
 
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -608,12 +659,13 @@ func getMovies(c *fiber.Ctx) error {
 	for rows.Next() {
 		var id, tmdbID int
 		var title, relDate, poster, mstatus string
-		var budget, domGross, wwGross, rt float64
-		rows.Scan(&id, &tmdbID, &title, &relDate, &poster, &budget, &domGross, &wwGross, &rt, &mstatus)
+		var budget, domGross, wwGross, rt, pts, projPts float64
+		rows.Scan(&id, &tmdbID, &title, &relDate, &poster, &budget, &domGross, &wwGross, &rt, &mstatus, &pts, &projPts)
 		movies = append(movies, fiber.Map{
 			"id": id, "tmdb_id": tmdbID, "title": title, "release_date": relDate,
 			"poster_url": poster, "budget": budget, "domestic_gross": domGross,
 			"worldwide_gross": wwGross, "rt_score": rt, "status": mstatus,
+			"points": pts, "projected_points": projPts,
 		})
 	}
 	if movies == nil {
